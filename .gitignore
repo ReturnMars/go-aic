@@ -3,7 +3,7 @@
 *.dll
 *.so
 *.dylib
-
+/dist
 # Config with secrets
 .marsx.yaml
 .marsx
