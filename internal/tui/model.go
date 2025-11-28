@@ -45,6 +45,7 @@ type Model struct {
 	windowH   int
 	diff      string
 	quickMode bool
+	FinalMsg  string // Exported for post-run display
 }
 
 func InitialModel(quick bool) Model {
@@ -226,6 +227,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.spinner.Tick, m.generateCommitCmd(""))
 		}
 		// Commit successful
+		m.FinalMsg = fmt.Sprintf("✔ Commit successful!\n%s", msg.output)
 		return m, tea.Quit
 
 	case errMsg:

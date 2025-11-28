@@ -16,9 +16,14 @@ var rootCmd = &cobra.Command{
 	Long:  `MarsX is a CLI tool that helps you generate shell commands using AI.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		p := tea.NewProgram(tui.InitialModel(quickMode), tea.WithAltScreen())
-		if _, err := p.Run(); err != nil {
+		m, err := p.Run()
+		if err != nil {
 			fmt.Printf("Alas, there's been an error: %v", err)
 			os.Exit(1)
+		}
+
+		if finalModel, ok := m.(tui.Model); ok && finalModel.FinalMsg != "" {
+			fmt.Println(finalModel.FinalMsg)
 		}
 	},
 }
