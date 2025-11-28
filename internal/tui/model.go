@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"marsx/internal/ai"
 	"marsx/internal/git"
+	"os/exec"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -20,30 +21,33 @@ const (
 	StateStart     SessionState = iota // Check git repo
 	StateInput                         // Waiting for user input (or auto-trigger)
 	StateLoading                       // AI generating
-	StateReview                        // User reviewing/editing commit message
+	StateReview                        // Preview generated commit
+	StateEditing                       // Editing commit message
 	StateExecuting                     // Committing
 	StateOutput                        // Done
 	StateError
 	StateChatResult
+	StateConfirmAdd // New state for git add confirmation
 )
 
 type Model struct {
 	viewport  viewport.Model
-	textInput textinput.Model // For chat/supplementary input
-	textArea  textarea.Model  // For editing commit message
+	textInput textinput.Model
+	textArea  textarea.Model
 	spinner   spinner.Model
 	state     SessionState
 	userInput string
-	aiResult  string // The generated commit message
+	aiResult  string
 	output    string
 	err       error
 	history   string
 	aiClient  *ai.Client
 	windowH   int
-	diff      string // Staged diff
+	diff      string
+	quickMode bool
 }
 
-func InitialModel() Model {
+func InitialModel(quick bool) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Type '?' to chat, or Enter to generate commit from staged files..."
 	ti.Focus()
@@ -70,6 +74,7 @@ func InitialModel() Model {
 		state:     StateStart,
 		history:   initialContent,
 		aiClient:  ai.NewClient(),
+		quickMode: quick,
 	}
 }
 
@@ -78,7 +83,7 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m *Model) resizeViewport() {
-	const bottomHeight = 12 // Increased for TextArea
+	const bottomHeight = 12
 	maxHeight := m.windowH - bottomHeight
 	if maxHeight < 1 {
 		maxHeight = 1
@@ -100,17 +105,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC:
 			return m, tea.Quit
 		case tea.KeyEsc:
-			if m.state == StateReview {
-				// Cancel review, back to input
+			if m.state == StateEditing {
+				m.state = StateReview
+				m.textArea.Blur()
+				return m, nil
+			}
+			if m.state == StateReview || m.state == StateConfirmAdd {
 				m.state = StateInput
 				m.textInput.Focus()
-				m.textArea.Blur()
 				return m, nil
 			}
 			if m.state == StateInput {
 				return m, tea.Quit
 			}
-			// Reset
 			m.state = StateInput
 			m.textInput.SetValue("")
 			m.textInput.Focus()
@@ -119,27 +126,54 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyEnter:
 			if m.state == StateInput {
 				m.userInput = m.textInput.Value()
-
-				// Chat mode
 				if strings.HasPrefix(m.userInput, "?") {
 					m.state = StateLoading
 					return m, tea.Batch(m.spinner.Tick, m.sendRequestCmd(m.userInput, ai.ModeChat))
 				}
-
-				// Commit Generation Mode
-				// If user typed something, treat it as context hint. If empty, just use diff.
 				m.state = StateLoading
 				return m, tea.Batch(m.spinner.Tick, m.generateCommitCmd(m.userInput))
 
 			} else if m.state == StateReview {
-				// User confirmed commit message
 				msg := m.textArea.Value()
 				if msg == "" {
-					return m, nil // Don't commit empty
+					return m, nil
+				}
+				m.state = StateExecuting
+				return m, tea.Batch(m.spinner.Tick, commitCmd(msg))
+			} else if m.state == StateConfirmAdd {
+				// Treat Enter as Yes
+				return m, tea.Batch(m.spinner.Tick, gitAddAllCmd)
+			}
+
+		case tea.KeyCtrlS:
+			if m.state == StateEditing {
+				msg := m.textArea.Value()
+				if msg == "" {
+					return m, nil
 				}
 				m.state = StateExecuting
 				return m, tea.Batch(m.spinner.Tick, commitCmd(msg))
 			}
+		}
+
+		if m.state == StateReview && msg.String() == "e" {
+			m.state = StateEditing
+			m.textArea.Focus()
+			return m, textarea.Blink
+		}
+
+		if m.state == StateConfirmAdd {
+			if strings.ToLower(msg.String()) == "y" {
+				return m, tea.Batch(m.spinner.Tick, gitAddAllCmd)
+			} else if strings.ToLower(msg.String()) == "n" {
+				m.state = StateInput
+				m.textInput.Focus()
+				return m, nil
+			}
+		}
+
+		if m.state != StateInput && m.state != StateEditing && msg.String() == "q" {
+			return m, tea.Quit
 		}
 
 	case tea.WindowSizeMsg:
@@ -152,7 +186,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("not a git repository")
 			m.state = StateError
 		} else {
-			m.state = StateInput
+			m.state = StateLoading
+			return m, tea.Batch(m.spinner.Tick, m.generateCommitCmd(""))
 		}
 
 	case aiResponseMsg:
@@ -163,18 +198,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.SetContent(m.history)
 			m.resizeViewport()
 			m.viewport.GotoBottom()
-			// Reset input
 			m.textInput.SetValue("")
 		} else {
-			// Commit generated
 			m.state = StateReview
 			m.aiResult = msg.content
 			m.textArea.SetValue(msg.content)
-			m.textArea.Focus()
-			m.textInput.Blur() // Blur main input
+			m.textArea.Blur()
 
-			// Show diff summary in history
-			newEntry := fmt.Sprintf("\n> Generating commit for staged changes...\nAI Suggestion: %s\n", msg.content)
+			newEntry := fmt.Sprintf("\n> Generating commit...\nAI Suggestion: %s\n", msg.content)
 			m.history += newEntry
 			m.viewport.SetContent(m.history)
 			m.resizeViewport()
@@ -183,20 +214,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case execOutputMsg:
-		newEntry := fmt.Sprintf("\n> Commit successful!\n%s\n",
-			lipgloss.NewStyle().Foreground(lipgloss.Color("#aaaaaa")).Render(msg.output))
-		m.history += newEntry
-		m.viewport.SetContent(m.history)
-		m.resizeViewport()
-		m.viewport.GotoBottom()
+		if strings.HasPrefix(msg.output, "Added") {
+			// git add successful, now retry generation
+			newEntry := fmt.Sprintf("\n> Staged all changes.\n")
+			m.history += newEntry
+			m.viewport.SetContent(m.history)
+			m.resizeViewport()
+			m.viewport.GotoBottom()
 
-		m.state = StateOutput
-		m.textInput.SetValue("")
-		m.textInput.Focus()
-		m.textArea.Reset()
-		return m, nil
+			m.state = StateLoading
+			return m, tea.Batch(m.spinner.Tick, m.generateCommitCmd(""))
+		}
+		// Commit successful
+		return m, tea.Quit
 
 	case errMsg:
+		if m.state == StateLoading && strings.Contains(msg.err.Error(), "no staged changes") {
+			// Transition to ConfirmAdd state
+			m.state = StateConfirmAdd
+			return m, nil
+		}
+
 		m.state = StateError
 		m.err = msg.err
 		return m, nil
@@ -208,7 +246,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if m.state == StateReview {
+	if m.state == StateEditing {
 		m.textArea, cmd = m.textArea.Update(msg)
 		return m, cmd
 	}
@@ -232,24 +270,32 @@ func (m Model) View() string {
 		bottomView = fmt.Sprintf(
 			"%s\n%s",
 			inputBoxStyle.Render(m.textInput.View()),
-			helpStyle.Render("[Enter] Generate Commit (staged) • [? + text] Chat • [Esc] Quit"),
+			helpStyle.Render("[Enter] Generate Commit • [? + text] Chat • [Esc] Quit"),
 		)
 	case StateLoading:
 		bottomView = fmt.Sprintf("%s Processing...", m.spinner.View())
 	case StateReview:
 		bottomView = fmt.Sprintf(
-			"Edit Commit Message:\n%s\n%s",
+			"Commit Message Preview:\n%s\n%s",
+			commandStyle.Render(m.textArea.Value()),
+			helpStyle.Render("[Enter] Commit • [e] Edit • [Esc] Cancel"),
+		)
+	case StateEditing:
+		bottomView = fmt.Sprintf(
+			"Editing Commit Message:\n%s\n%s",
 			m.textArea.View(),
-			helpStyle.Render("[Enter] Commit • [Esc] Cancel"),
+			helpStyle.Render("[Ctrl+S] Save & Commit • [Esc] Cancel Edit"),
 		)
 	case StateExecuting:
-		bottomView = fmt.Sprintf("%s Committing...", m.spinner.View())
-	case StateOutput:
+		bottomView = fmt.Sprintf("%s Executing...", m.spinner.View())
+	case StateConfirmAdd:
 		bottomView = fmt.Sprintf(
 			"%s\n%s",
-			lipgloss.NewStyle().Bold(true).Foreground(special).Render("Done!"),
-			helpStyle.Render("[Enter] New Action • [q] Quit"),
+			lipgloss.NewStyle().Foreground(warning).Bold(true).Render("No staged changes found."),
+			helpStyle.Render("Stage all changes (git add .)? [Y/n]"),
 		)
+	case StateOutput:
+		bottomView = "Done."
 	case StateError:
 		bottomView = fmt.Sprintf(
 			"Error: %s\n%s",
@@ -257,14 +303,13 @@ func (m Model) View() string {
 			helpStyle.Render("[Esc] Back"),
 		)
 	case StateChatResult:
-		bottomView = helpStyle.Render("Chat response received. Type next query or command.")
+		bottomView = helpStyle.Render("Chat response received. Type next query.")
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, viewportStyle.Render(m.viewport.View()), appStyle.Render(bottomView))
 }
 
-// Messages & Cmds
-
+// ... (rest remains same)
 type aiResponseMsg struct {
 	content string
 	mode    ai.Mode
@@ -293,15 +338,14 @@ func (m Model) generateCommitCmd(hint string) tea.Cmd {
 			return errMsg{err}
 		}
 		if len(diff) == 0 {
-			return errMsg{fmt.Errorf("no staged changes. Use 'git add' first")}
+			return errMsg{fmt.Errorf("no staged changes")}
 		}
 
-		// Limit diff size to avoid token limits
 		if len(diff) > 4000 {
 			diff = diff[:4000] + "\n... (truncated)"
 		}
 
-		prompt := fmt.Sprintf("Diff:\n%s\n\nContext hint: %s", diff, hint)
+		prompt := fmt.Sprintf("Diff:\n%s\n\nHint: %s", diff, hint)
 
 		resp, err := m.aiClient.SendRequest(prompt, ai.ModeCommand)
 		if err != nil {
@@ -329,4 +373,12 @@ func commitCmd(msg string) tea.Cmd {
 		}
 		return execOutputMsg{output: out}
 	}
+}
+
+func gitAddAllCmd() tea.Msg {
+	cmd := exec.Command("git", "add", ".")
+	if err := cmd.Run(); err != nil {
+		return errMsg{fmt.Errorf("git add failed: %v", err)}
+	}
+	return execOutputMsg{output: "Added all changes"}
 }

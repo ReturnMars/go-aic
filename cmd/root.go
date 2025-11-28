@@ -15,7 +15,7 @@ var rootCmd = &cobra.Command{
 	Short: "MarsX - AI powered terminal assistant",
 	Long:  `MarsX is a CLI tool that helps you generate shell commands using AI.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		p := tea.NewProgram(tui.InitialModel(), tea.WithAltScreen())
+		p := tea.NewProgram(tui.InitialModel(quickMode), tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
 			fmt.Printf("Alas, there's been an error: %v", err)
 			os.Exit(1)
@@ -30,11 +30,15 @@ func Execute() {
 	}
 }
 
-var cfgFile string
+var (
+	cfgFile   string
+	quickMode bool
+)
 
 func init() {
 	cobra.OnInitialize(initConfig)
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.marsx.yaml)")
+	rootCmd.Flags().BoolVarP(&quickMode, "quick", "q", false, "Quickly generate commit message from staged changes")
 }
 
 func initConfig() {

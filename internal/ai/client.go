@@ -6,16 +6,20 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/viper"
 )
 
 type Client struct {
-	ApiKey  string
-	ApiBase string
-	Model   string
-	History []Message // Keep chat history
+	ApiKey       string
+	ApiBase      string
+	Model        string
+	History      []Message
+	CommitPrompt string
+	ChatPrompt   string
 }
 
 type Message struct {
@@ -45,15 +49,35 @@ func NewClient() *Client {
 		model = "gpt-3.5-turbo"
 	}
 
+	// Default Prompts (Hardcoded fallback)
+	commitPrompt := fmt.Sprintf(`You are a commit message generator.
+Output format: <type>(<scope>): <subject>
+Language: Chinese (Simplified).
+OS: %s
+Return ONLY the commit message.`, runtime.GOOS)
+
+	chatPrompt := fmt.Sprintf("You are MarsX helper. Language: Chinese (Simplified). OS: %s", runtime.GOOS)
+
+	// Try to load from PROMPTS.md
+	if content, err := os.ReadFile("PROMPTS.md"); err == nil {
+		fullText := string(content)
+		// Simple split by headers if possible, but for MVP, let's assume the file
+		// is primarily for the System Prompt of the main task (Commit).
+		// Or we can just use the whole file as context.
+		// Let's stick to a simple logic: If file exists, use it as the BASE for commit generation.
+		commitPrompt = fullText
+	}
+
 	return &Client{
-		ApiKey:  apiKey,
-		ApiBase: strings.TrimRight(apiBase, "/"),
-		Model:   model,
-		History: []Message{},
+		ApiKey:       apiKey,
+		ApiBase:      strings.TrimRight(apiBase, "/"),
+		Model:        model,
+		History:      []Message{},
+		CommitPrompt: commitPrompt,
+		ChatPrompt:   chatPrompt,
 	}
 }
 
-// Mode defines whether we want a command or a chat response
 type Mode int
 
 const (
@@ -68,26 +92,20 @@ func (c *Client) SendRequest(userQuery string, mode Mode) (string, error) {
 
 	var systemPrompt string
 	if mode == ModeCommand {
-		systemPrompt = `You are a professional developer tool that generates Git commit messages.
-Your task is to analyze the provided "git diff" output and generate a concise, standard commit message.
-RULES:
-1. Use Conventional Commits format (e.g., "feat: add login", "fix: typo in readme").
-2. Subject line must be under 50 chars.
-3. Return ONLY the commit message text. No explanations.
-4. If the diff is empty or unclear, describe what you see concisely.`
+		systemPrompt = c.CommitPrompt
 	} else {
-		systemPrompt = `You are MarsX, an intelligent coding assistant.
-You can explain git diffs, answer technical questions, or help with coding tasks.
-Be concise and helpful. Use Markdown.`
+		systemPrompt = c.ChatPrompt
 	}
 
-	// Construct messages
 	messages := []Message{
 		{Role: "system", Content: systemPrompt},
 	}
-	// Append history (TODO: Limit history size if needed)
-	messages = append(messages, c.History...)
-	// Append current user query
+
+	// Only append history for Chat mode to avoid polluting commit context
+	if mode == ModeChat {
+		messages = append(messages, c.History...)
+	}
+
 	messages = append(messages, Message{Role: "user", Content: userQuery})
 
 	reqBody := ChatRequest{
@@ -131,9 +149,11 @@ Be concise and helpful. Use Markdown.`
 
 	result := strings.TrimSpace(chatResp.Choices[0].Message.Content)
 
-	// Update history
-	c.History = append(c.History, Message{Role: "user", Content: userQuery})
-	c.History = append(c.History, Message{Role: "assistant", Content: result})
+	// Update history only for chat mode
+	if mode == ModeChat {
+		c.History = append(c.History, Message{Role: "user", Content: userQuery})
+		c.History = append(c.History, Message{Role: "assistant", Content: result})
+	}
 
 	return result, nil
 }
