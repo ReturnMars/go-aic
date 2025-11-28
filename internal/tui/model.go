@@ -45,12 +45,13 @@ type Model struct {
 	windowH   int
 	diff      string
 	quickMode bool
-	FinalMsg  string // Exported for post-run display
+	FinalMsg  string
 }
 
 func InitialModel(quick bool) Model {
 	ti := textinput.New()
-	ti.Placeholder = "Type '?' to chat, or Enter to generate commit from staged files..."
+	// Updated prompt text
+	ti.Placeholder = "Type to chat... (Press Enter with empty input to generate commit)"
 	ti.Focus()
 	ti.Width = 60
 
@@ -64,7 +65,7 @@ func InitialModel(quick bool) Model {
 	sp.Style = lipgloss.NewStyle().Foreground(highlight)
 
 	vp := viewport.New(80, 1)
-	initialContent := titleStyle.Render("MarsX Git Assistant") + "\n\nReady to commit.\n"
+	initialContent := titleStyle.Render("MarsX Git Assistant") + "\n\nReady to chat or commit.\n"
 	vp.SetContent(initialContent)
 
 	return Model{
@@ -127,12 +128,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyEnter:
 			if m.state == StateInput {
 				m.userInput = m.textInput.Value()
-				if strings.HasPrefix(m.userInput, "?") {
+
+				// If input is empty, trigger Commit Generation manually
+				if strings.TrimSpace(m.userInput) == "" {
 					m.state = StateLoading
-					return m, tea.Batch(m.spinner.Tick, m.sendRequestCmd(m.userInput, ai.ModeChat))
+					return m, tea.Batch(m.spinner.Tick, m.generateCommitCmd(""))
 				}
+
+				// Otherwise, treat everything as CHAT
 				m.state = StateLoading
-				return m, tea.Batch(m.spinner.Tick, m.generateCommitCmd(m.userInput))
+				return m, tea.Batch(m.spinner.Tick, m.sendRequestCmd(m.userInput, ai.ModeChat))
 
 			} else if m.state == StateReview {
 				msg := m.textArea.Value()
@@ -142,7 +147,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state = StateExecuting
 				return m, tea.Batch(m.spinner.Tick, commitCmd(msg))
 			} else if m.state == StateConfirmAdd {
-				// Treat Enter as Yes
 				return m, tea.Batch(m.spinner.Tick, gitAddAllCmd)
 			}
 
@@ -187,6 +191,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("not a git repository")
 			m.state = StateError
 		} else {
+			// STARTUP LOGIC:
+			// Try to generate commit immediately (Quick Mode by default)
+			// If it fails (no staged changes), it will bubble up as errMsg,
+			// which we catch below to switch to Input state smoothly.
 			m.state = StateLoading
 			return m, tea.Batch(m.spinner.Tick, m.generateCommitCmd(""))
 		}
@@ -216,7 +224,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case execOutputMsg:
 		if strings.HasPrefix(msg.output, "Added") {
-			// git add successful, now retry generation
 			newEntry := fmt.Sprintf("\n> Staged all changes.\n")
 			m.history += newEntry
 			m.viewport.SetContent(m.history)
@@ -226,13 +233,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = StateLoading
 			return m, tea.Batch(m.spinner.Tick, m.generateCommitCmd(""))
 		}
-		// Commit successful
 		m.FinalMsg = fmt.Sprintf("✔ Commit successful!\n%s", msg.output)
 		return m, tea.Quit
 
 	case errMsg:
 		if m.state == StateLoading && strings.Contains(msg.err.Error(), "no staged changes") {
-			// Transition to ConfirmAdd state
+			// If this error happened during STARTUP (auto-generate),
+			// and we haven't asked the user yet, we could prompt them.
+			// OR, if user explicitly requested generation (Enter on empty input), we prompt them.
+			// Logic: If "no staged changes", ALWAYS prompt to add all.
 			m.state = StateConfirmAdd
 			return m, nil
 		}
@@ -272,7 +281,7 @@ func (m Model) View() string {
 		bottomView = fmt.Sprintf(
 			"%s\n%s",
 			inputBoxStyle.Render(m.textInput.View()),
-			helpStyle.Render("[Enter] Generate Commit • [? + text] Chat • [Esc] Quit"),
+			helpStyle.Render("[Enter (Empty)] Generate Commit • [Type text] Chat • [Esc] Quit"),
 		)
 	case StateLoading:
 		bottomView = fmt.Sprintf("%s Processing...", m.spinner.View())
@@ -305,6 +314,16 @@ func (m Model) View() string {
 			helpStyle.Render("[Esc] Back"),
 		)
 	case StateChatResult:
+		// In chat result, we basically go back to input immediately or show a prompt
+		// Actually, we transition state back to Input in Update logic usually,
+		// but here we might want to stay in a state that shows "Ready"
+		// Let's just reuse the Input view logic if we want continuous chat.
+		// Wait, my Update logic for StateChatResult sets state to StateChatResult but doesn't reset to Input automatically?
+		// Ah, looking at Update:
+		// if msg.mode == ai.ModeChat { m.state = StateChatResult ... }
+		// But KeyMsg handler for StateChatResult -> transitions to StateInput.
+		// So user sees result, then presses any key? No, KeyMsg handler handles Enter/Esc.
+		// Let's make it seamless: After chat result, go straight back to Input.
 		bottomView = helpStyle.Render("Chat response received. Type next query.")
 	}
 
