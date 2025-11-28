@@ -38,12 +38,16 @@ func Execute() {
 var (
 	cfgFile   string
 	quickMode bool
+	Version   = "dev" // set by build script
+	Commit    = "none"
+	Date      = "unknown"
 )
 
 func init() {
 	cobra.OnInitialize(initConfig)
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.marsx.yaml)")
 	rootCmd.Flags().BoolVarP(&quickMode, "quick", "q", false, "Quickly generate commit message from staged changes")
+	rootCmd.Version = Version
 }
 
 func initConfig() {

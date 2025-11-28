@@ -1,0 +1,52 @@
+# .goreleaser.yaml
+version: 2
+
+project_name: marsx
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    
+    # Ldflags for versioning
+    # This matches the variables we set in cmd/root.go
+    ldflags:
+      - -s -w
+      - -X marsx/cmd.Version={{.Version}}
+      - -X marsx/cmd.Commit={{.Commit}}
+      - -X marsx/cmd.Date={{.Date}}
+
+archives:
+  - format: tar.gz
+    # use zip for windows
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+      - PROMPTS.md
+      - .marsx.example.yaml
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+

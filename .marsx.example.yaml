@@ -1,0 +1,14 @@
+# MarsX 配置文件示例
+# 请复制此文件为 .marsx.yaml 并填入您的 API Key
+
+# OpenAI / DeepSeek API Key (必填)
+openai_api_key: "sk-xxxxxxxxxxxxxxxxxxxxxxxx"
+
+# API Base URL (选填，默认 https://api.openai.com/v1)
+# DeepSeek 示例:
+# openai_api_base: "https://api.deepseek.com"
+
+# 模型名称 (选填，默认 gpt-3.5-turbo)
+# DeepSeek 示例:
+# openai_model: "deepseek-chat"
+
