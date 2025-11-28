@@ -31,3 +31,12 @@ func CheckIfGitRepo() bool {
 	cmd := exec.Command("git", "rev-parse", "--is-inside-work-tree")
 	return cmd.Run() == nil
 }
+
+// AddAll stages all changes (git add .)
+func AddAll() error {
+	cmd := exec.Command("git", "add", ".")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git add . failed: %v", err)
+	}
+	return nil
+}

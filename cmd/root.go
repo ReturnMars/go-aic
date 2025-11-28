@@ -5,7 +5,6 @@ import (
 	"marsx/internal/tui"
 	"os"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -15,16 +14,7 @@ var rootCmd = &cobra.Command{
 	Short: "MarsX - AI powered terminal assistant",
 	Long:  `MarsX is a CLI tool that helps you generate shell commands using AI.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		p := tea.NewProgram(tui.InitialModel(quickMode), tea.WithAltScreen())
-		m, err := p.Run()
-		if err != nil {
-			fmt.Printf("Alas, there's been an error: %v", err)
-			os.Exit(1)
-		}
-
-		if finalModel, ok := m.(tui.Model); ok && finalModel.FinalMsg != "" {
-			fmt.Println(finalModel.FinalMsg)
-		}
+		tui.Start(quickMode, chatMode)
 	},
 }
 
@@ -38,6 +28,7 @@ func Execute() {
 var (
 	cfgFile   string
 	quickMode bool
+	chatMode  bool
 	Version   = "dev" // set by build script
 	Commit    = "none"
 	Date      = "unknown"
@@ -47,6 +38,7 @@ func init() {
 	cobra.OnInitialize(initConfig)
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.marsx.yaml)")
 	rootCmd.Flags().BoolVarP(&quickMode, "quick", "q", false, "Quickly generate commit message from staged changes")
+	rootCmd.Flags().BoolVarP(&chatMode, "chat", "c", false, "Start directly in chat mode")
 	rootCmd.Version = Version
 }
 
