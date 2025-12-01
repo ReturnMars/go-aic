@@ -1,3 +1,22 @@
+<!-- OPENSPEC:START -->
+# OpenSpec Instructions
+
+These instructions are for AI assistants working in this project.
+
+Always open `@/openspec/AGENTS.md` when the request:
+- Mentions planning or proposals (words like proposal, spec, change, plan)
+- Introduces new capabilities, breaking changes, architecture shifts, or big performance/security work
+- Sounds ambiguous and you need the authoritative spec before coding
+
+Use `@/openspec/AGENTS.md` to learn:
+- How to create and apply change proposals
+- Spec format and conventions
+- Project structure and guidelines
+
+Keep this managed block so 'openspec update' can refresh the instructions.
+
+<!-- OPENSPEC:END -->
+
 # MarsX Agent & Architecture Guide
 
 本文档旨在指导 AI 助手（如 Cursor Agent）如何维护本项目，同时也描述了 MarsX 内部的 AI 设计架构。
@@ -14,7 +33,7 @@
     *   文件头必须包含功能简述注释。
     *   注释应清晰、简洁。
 3.  **架构原则**：
-    *   **TUI 层** (`internal/tui`): 负责所有界面渲染，禁止包含 Git/AI 业务逻辑，仅通过 Cmd/Msg 通信。
+    *   **TUI 层** (`internal/tui`): 负责所有界面渲染，采用 **Native TUI (fmt/scan)** 方式，结合 `glamour` 进行 Markdown 渲染。禁止引入复杂的 UI 框架（如 Bubble Tea），以保持跨平台兼容性和响应速度。
     *   **逻辑层** (`internal/git`, `internal/ai`): 保持纯净，不依赖 UI 库。
     *   **配置层** (`PROMPTS.md`): 提示词必须外部化，禁止硬编码在 Go 代码中。
 
@@ -45,26 +64,30 @@ Prompt 并不硬编码在二进制文件中，而是优先读取运行目录下�
 
 ### 3. 状态流转 (State Machine)
 
-UI 基于 Elm Architecture (Bubble Tea)，主要状态流如下：
+UI 采用原生过程式交互循环，主要状态流如下：
 
 ```mermaid
 graph TD
     Start[Start] --> CheckGit{Is Git Repo?}
     CheckGit -- No --> Error
-    CheckGit -- Yes --> Input[StateInput]
+    CheckGit -- Yes --> ModeCheck{Chat Mode Flag?}
     
-    Input -- Auto/Enter --> Loading[StateLoading]
-    Input -- '?' --> Loading
+    ModeCheck -- Yes (-c) --> ChatLoop[Chat Loop]
+    ModeCheck -- No --> DiffCheck{Has Staged Diff?}
     
-    Loading -- AI Response --> Review[StateReview / Preview]
+    DiffCheck -- No --> PromptStage[Prompt: Stage All?]
+    PromptStage -- Yes (Enter) --> GitAdd[git add .] --> GenCommit
+    PromptStage -- No (n) --> ChatLoop
     
-    Review -- 'e' --> Editing[StateEditing]
-    Editing -- 'Ctrl+S' --> Executing
+    DiffCheck -- Yes --> GenCommit[Generate Commit Msg]
     
-    Review -- Enter --> Executing[StateExecuting]
+    GenCommit --> Review[Review / Input Loop]
     
-    Executing -- git commit --> Output[StateOutput]
-    Output --> Quit
+    Review -- Empty Input --> GenCommit
+    Review -- Input Text --> ChatResponse[AI Chat Response] --> ChatLoop
+    
+    Review -- Enter --> Executing[git commit] --> Quit
+    Review -- 'q' --> Quit
 ```
 
 ### 4. 扩展计划
