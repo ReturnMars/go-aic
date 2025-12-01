@@ -27,15 +27,12 @@ builds:
       - -X marsx/cmd.Date={{.Date}}
 
 archives:
-  - format: tar.gz
-    # use zip for windows
-    format_overrides:
-      - goos: windows
-        format: zip
-    files:
+  - files:
       - README.md
       - PROMPTS.md
       - .marsx.example.yaml
+    # Removed explicit 'format' and 'format_overrides' as GoReleaser v2 defaults to:
+    # Windows -> zip, Others -> tar.gz automatically.
 
 checksum:
   name_template: 'checksums.txt'
